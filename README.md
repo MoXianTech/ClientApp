@@ -15,4 +15,4 @@
 
 ##### 用户权限申请：
 - 发送邮件至steven.kuang@mxkj.net.cn
-- 标题请注明【ClientApp权限申请】
+- 标题请注明【ClientApp权限申请】并附上【github注册使用的邮箱】
