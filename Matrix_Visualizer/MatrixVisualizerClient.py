@@ -11,6 +11,7 @@ import threading
 import serial
 import serial.tools.list_ports
 import numpy as np
+import array
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
@@ -24,6 +25,7 @@ from win32con import SW_RESTORE
 import pyqtgraph.graphicsItems.ViewBox.axisCtrlTemplate_pyqt5
 import pyqtgraph.graphicsItems.PlotItem.plotConfigTemplate_pyqt5
 import pyqtgraph.imageview.ImageViewTemplate_pyqt5
+from PIL import Image
 
 class CustomComboBox(QComboBox):
     popupAboutToBeShown = pyqtSignal()
@@ -40,8 +42,8 @@ class CustomComboBox(QComboBox):
         portlist = self.get_port_list(self)
         if portlist is not None:
             for i in portlist:
-                pos = i.find('-')
-                self.insertItem(index, i[:pos-1])
+                # self.insertItem(index, i[:pos-1])
+                self.insertItem(index, i)
                 index += 1
         QComboBox.showPopup(self)   # 弹出选项框
 
@@ -55,15 +57,19 @@ class CustomComboBox(QComboBox):
         except Exception as e:
             print("获取接入的所有串口设备出错！\n错误信息："+str(e))
 
+
 class MainWindow(QMainWindow):
     trans_data = pyqtSignal(dict)  # 创建信号
 
     def __init__(self, parent=None):
         super(MainWindow, self).__init__(parent)
 
+        np.set_printoptions(threshold=np.inf)
+
         # 协议
         self.protocol_head = "a55a01"
         self.head_len = 6
+        self.protocol_bitset = 8
         # 串口
         self.usable_port = []
         self.print_com()
@@ -103,17 +109,18 @@ class MainWindow(QMainWindow):
         self.voltage_num = 3.3
         self.internal_resistance = 0
         self.histogram_density = False
+        self.map_interp_ratio = 1
 
         # GUI
         self.area = DockArea()
         self.setCentralWidget(self.area)
         self.resize(1700, 900)
-        self.setWindowTitle('墨现科技--客户端1.1.2')
+        self.setWindowTitle('墨现科技--客户端1.1.6')
         self.setWindowIcon(QIcon('matrix.png'))
-        pg.setConfigOptions(antialias=True)
+        pg.setConfigOptions(antialias=False)
 
         # 设置Dock位置
-        d1 = Dock("压力分布图", size=(700, 450), closable=True, fontSize=20)  ## give this dock the minimum possible size
+        d1 = Dock("压力分布图", size=(700, 450), closable=True, fontSize=20)  # give this dock the minimum possible size
         d2 = Dock("与时间关系图", size=(700, 450), closable=True, fontSize=20)
         d3 = Dock("一致性直方图", size=(700, 450), closable=True, fontSize=20)
         # d4 = Dock("与重量关系图", size=(700, 450), closable=True, fontSize=20)
@@ -157,17 +164,33 @@ class MainWindow(QMainWindow):
         self.max_map.setRange(0, 100000)
         self.min_map.valueChanged.connect(self.update_mapLevel)
         self.max_map.valueChanged.connect(self.update_mapLevel)
-        gray_radio = QRadioButton('灰阶图')
-        jet_radio = QRadioButton('热力图')
-        gray_radio.setChecked(True)
-        self.d1_group = QButtonGroup()
-        self.d1_group.addButton(gray_radio, 0)
-        self.d1_group.addButton(jet_radio, 1)
-        self.d1_group.buttonClicked[int].connect(self.mapColor_check)
+        map_color_label = QLabel('图谱颜色：')
+        map_color_label.setAlignment(Qt.AlignCenter)
+        self.map_color_combobox = QComboBox()
+        self.list_of_maps = pg.colormap.listMaps('matplotlib')
+        self.map_color_combobox.addItems(self.list_of_maps)
+        self.map_color_combobox.setCurrentIndex(39)  # set default colormap 'binary'
+        self.map_color_combobox.currentIndexChanged[int].connect(self.map_color_check)  # 条目发生改变，发射信号，传递条目内容
+        map_interp_label = QLabel('超分辨率：')
+        map_interp_label.setAlignment(Qt.AlignCenter)
+        self.map_interp_spinbox = QSpinBox()
+        self.map_interp_spinbox.setRange(0, 50)
+        # self.map_interp_spinbox.setFocusPolicy(Qt.NoFocus)
+        self.map_interp_spinbox.setSuffix(" 倍")
+        self.map_interp_spinbox.setPrefix("x ")
+        self.map_interp_spinbox.setSingleStep(5)
+        self.map_interp_spinbox.valueChanged[int].connect(self.map_interp_check)
+        # jet_radio = QRadioButton()
+        # self.d1_group = QButtonGroup()
+        # self.d1_group.addButton(map_color_combobox, 0)
+        # self.d1_group.addButton(jet_radio, 1)
+        # self.d1_group.buttonClicked[int].connect(self.mapColor_check)
 
-        d1.addWidget(gray_radio, row=0, col=1)
-        d1.addWidget(jet_radio, row=0, col=2)
-        d1.addWidget(automap_checkbox, row=0, col=4)
+        d1.addWidget(map_color_label, row=0, col=0)
+        d1.addWidget(self.map_color_combobox, row=0, col=1)
+        d1.addWidget(map_interp_label, row=0, col=2)
+        d1.addWidget(self.map_interp_spinbox, row=0, col=3)
+        d1.addWidget(automap_checkbox, row=0, col=5)
         d1.addWidget(min_map_label, row=0, col=6)
         d1.addWidget(self.min_map, row=0, col=7)
         d1.addWidget(max_map_label, row=0, col=9)
@@ -201,7 +224,6 @@ class MainWindow(QMainWindow):
 
         self.trans_data.connect(self.update_wholeTime)
         d8.addWidget(self.w8)
-
 
         # Dock3--直方图
         num_radio = QRadioButton('显示数量')
@@ -313,11 +335,11 @@ class MainWindow(QMainWindow):
 
         # 添加Qtable
         self.matrix_table = QTableWidget()
-        self.matrix_table.setColumnCount(10)  # 设置表格一共有10列
-        self.matrix_table.setRowCount(10)  # 设置表格一共有10列
+        self.matrix_table.setColumnCount(16)  # 设置表格一共有16列
+        self.matrix_table.setRowCount(16)  # 设置表格一共有16列
         self.matrix_table.setStyleSheet(
             "QHeaderView::section{background-color:rgb(155, 194, 230);font:11pt '宋体';color: black;};")
-        for i in range(0, 10):
+        for i in range(0, self.matrix_table.rowCount()):
             self.matrix_table.setColumnWidth(i, 60)
             self.matrix_table.setRowHeight(i, 60)
         self.matrix_table.setEditTriggers(QTableView.NoEditTriggers)
@@ -506,13 +528,13 @@ class MainWindow(QMainWindow):
         self.resistance_combobox = QComboBox()
         self.bps_combobox.setEditable(True)
         self.resistance_combobox.setEditable(True)
-        self.protocol_combobox.addItems(['测试治具', '扫地机'])
+        self.protocol_combobox.addItems(['测试治具（8位）', '测试治具（16位）', '扫地机'])
         self.port_combobox.addItems(self.usable_port)
-        self.bps_combobox.addItems(['115200', '230400'])
+        self.bps_combobox.addItems(['115200', '460800'])
         self.voltage_combobox.addItems(['3.3', '5'])
         self.resistance_combobox.addItems(['200', '2000', '20000'])
         self.protocol_combobox.setCurrentIndex(0)
-        self.port_combobox.setCurrentIndex(0)
+        self.port_combobox.setCurrentIndex(len(self.usable_port)-1)
         self.bps_combobox.setCurrentIndex(0)
         self.voltage_combobox.setCurrentIndex(0)
         self.resistance_combobox.setCurrentIndex(0)
@@ -523,7 +545,6 @@ class MainWindow(QMainWindow):
         w7.addWidget(self.bps_combobox, row=2, col=1)
         w7.addWidget(self.voltage_combobox, row=3, col=1)
         w7.addWidget(self.resistance_combobox, row=4, col=1)
-
 
         w12 = pg.LayoutWidget()
         row_label = QLabel('行数')
@@ -609,15 +630,21 @@ class MainWindow(QMainWindow):
         #     self.usable_port = ['找不到串口']
         for i in range(0, len(port_list)):
             port = str(port_list[i])
-            index = port.find('-')
-            self.usable_port.append(port[:index-1])
+            # index = port.find('-')
+            self.usable_port.append(port)
 
     def update_protocol(self):
         if self.protocol_combobox.currentIndex() == 0:
             self.protocol_head = "a55a01"
+            self.protocol_bitset = 8
             self.head_len = 6
         elif self.protocol_combobox.currentIndex() == 1:
+            self.protocol_head = "a55a01"
+            self.protocol_bitset = 16
+            self.head_len = 6
+        elif self.protocol_combobox.currentIndex() == 2:
             self.protocol_head = "a55a55aa01"
+            self.protocol_bitset = 16
             self.head_len = 8
 
     # def update_internal(self):
@@ -644,7 +671,10 @@ class MainWindow(QMainWindow):
         try:
             self.printf("开始连接串口...")
             self.loop = True
-            self.port = self.port_combobox.currentText()
+            port_info = self.port_combobox.currentText()
+            index = port_info.find('-')
+            self.port = port_info[:index - 1]
+
             self.baud = int(self.bps_combobox.currentText())
             self.voltage_num = float(self.voltage_combobox.currentText())
             self.resistance_num = int(self.resistance_combobox.currentText())
@@ -656,6 +686,7 @@ class MainWindow(QMainWindow):
             serial_port = serial.Serial(self.port, self.baud, timeout=0.1)
             read_thread = threading.Thread(target=self.receive_data, args=(serial_port,))
             check_thread = threading.Thread(target=self.check_sum)
+            # check_thread = threading.Thread(target=self.check_crc32_mpeg2())
             calculate_thread = threading.Thread(target=self.calculate_data)
             read_thread.setDaemon(True)  # 守护线程
             check_thread.setDaemon(True)
@@ -722,19 +753,64 @@ class MainWindow(QMainWindow):
                 decimal_list = [int(i, 16) for i in double_list[:-2]]  # 16进制转10进制
                 check_data = int(double_list[-1] + double_list[-2], 16)  # 校验和
                 sum_data = sum(decimal_list) % 65536
+
                 if sum_data == check_data:  # 除开校验位，自身加和
                     matrix_data = double_list[self.head_len:-2]
-                    reform_data = [matrix_data[i+1] + matrix_data[i] for i in
-                                   range(0, len(matrix_data), 2)]
-                    divide_data = np.array([int(i, 16) for i in reform_data]) / 1000
+
+                    if self.protocol_bitset == 8: # 8bit数据求和
+                        reform_data = [matrix_data[i] for i in
+                                       range(0, len(matrix_data))]
+                        divide_data = np.array([int(i, 16) for i in reform_data]) / 100
+                    else:  # 16bit 数据求和
+                        reform_data = [matrix_data[i + 1] + matrix_data[i] for i in
+                                       range(0, len(matrix_data), 2)]
+                        divide_data = np.array([int(i, 16) for i in reform_data]) / 1000
+
                     self.data_list = deepcopy({"data": divide_data, "sec_time": save_receive_list["sec_time"],
                                                "hour_time": save_receive_list["hour_time"]})
                     time.sleep(0.01)
                 else:
+
+                    print("校验出错")
+            except Exception as e:
+                print("串口数据校验环节出错：", e)
+                time.sleep(0.01)
+
+    def check_crc32_mpeg2(self):
+        while self.loop:
+            try:
+                save_receive_list = deepcopy(self.receive_list[0])
+
+                double_list = [save_receive_list["data"][i:i + 2] for i in
+                               range(0, len(save_receive_list["data"]), 2)]  # 按字节分隔成数组
+
+                str_list = save_receive_list["data"][0:-8]
+                check_data = int(save_receive_list["data"][-8:], 16)  # 校验和
+
+                crc_result = crc32_mpeg2(str_list.encode())
+
+                if crc_result == check_data:  # 除开校验位，自身加和
+                    matrix_data = double_list[self.head_len:-4]
+
+                    if self.protocol_bitset == 8:  # 8bit数据求和
+                        reform_data = [matrix_data[i] for i in
+                                       range(0, len(matrix_data))]
+                        divide_data = np.array([int(i, 16) for i in reform_data]) / 100
+                    else:  # 16bit 数据求和
+                        reform_data = [matrix_data[i + 1] + matrix_data[i] for i in
+                                       range(0, len(matrix_data), 2)]
+                        divide_data = np.array([int(i, 16) for i in reform_data]) / 1000
+
+                    self.data_list = deepcopy({"data": divide_data, "sec_time": save_receive_list["sec_time"],
+                                               "hour_time": save_receive_list["hour_time"]})
+                    time.sleep(0.01)
+                else:
+
                     print("校验出错")
             except Exception as e:
                 print("串口数据校验环节出错：", e)
                 time.sleep(0.005)
+
 
     def calculate_data(self):
         while self.loop:
@@ -798,17 +874,30 @@ class MainWindow(QMainWindow):
                 time.sleep(0.005)
 
     def update_map(self, signal):
-        self.img.setImage(signal['matrix_list'], autoLevels=self.auto_map, levels=self.map_level)
-
-    def mapColor_check(self):
-        if self.d1_group.checkedId() == 0:
-            gray_map = pg.colormap.get(name='gray', source='matplotlib')
-            self.bar = pg.ColorBarItem(interactive=False, colorMap=gray_map)
-            self.bar.setImageItem(self.img)
+        if self.map_interp_ratio == 1:
+            self.img.setImage(signal['matrix_list'], autoLevels=self.auto_map, levels=self.map_level)
         else:
-            jet_map = pg.colormap.get(name='jet', source='matplotlib')
-            self.bar = pg.ColorBarItem(interactive=False, colorMap=jet_map)
-            self.bar.setImageItem(self.img)
+            tmp_img = Image.fromarray(signal['matrix_list'])
+            tmp_img = tmp_img.resize((tmp_img.width*self.map_interp_ratio, tmp_img.height*self.map_interp_ratio), Image.Resampling.BICUBIC)
+            tmp_array = np.asarray(tmp_img)
+            self.img.setImage(tmp_array, autoLevels=self.auto_map, levels=self.map_level)
+
+    def map_color_check(self):
+        special_map = pg.colormap.get(name=self.map_color_combobox.currentText(), source='matplotlib')
+        self.bar = pg.ColorBarItem(interactive=False, colorMap=special_map)
+        self.bar.setImageItem(self.img)
+
+    def map_interp_check(self):
+        ratio = self.map_interp_spinbox.value()
+        if ratio == 0:
+            self.map_interp_ratio = 1
+        elif ratio * max(self.row_num, self.col_num) > 640:
+            self.map_interp_ratio = math.floor(64/max(self.row_num, self.col_num))*10
+            self.map_interp_spinbox.setValue(self.map_interp_ratio)
+        else:
+            self.map_interp_ratio = ratio
+
+
 
     def automap_check(self):
         if self.auto_map:
@@ -913,10 +1002,10 @@ class MainWindow(QMainWindow):
     def update_matrix(self, signal):
         row = len(signal['matrix_list'])
         col = len(signal['matrix_list'][0])
-        if row > 10:
-            row = 10
-        if col > 10:
-            col = 10
+        if row > 16:
+            row = 16
+        if col > 16:
+            col = 16
         for r in range(0, row):
             for c in range(0, col):
                 self.matrix_table.setItem(r, c, QTableWidgetItem(str(signal['matrix_list'][-r-1][c])))
@@ -1256,7 +1345,7 @@ class MainWindow(QMainWindow):
     def screen_shot(self):
         try:
             name = datetime.datetime.now().strftime("%Y-%m-%d %H-%M-%S")
-            hwnd = FindWindow(None, "墨现科技--客户端1.1.2")
+            hwnd = FindWindow(None, "墨现科技--客户端1.1.6")
             ShowWindow(hwnd, SW_RESTORE)  # 强行显示界面，窗口最小化时无法截图
             screen = QApplication.primaryScreen()
             img = screen.grabWindow(hwnd).toImage()
@@ -1288,6 +1377,7 @@ class MainWindow(QMainWindow):
 
     def open_timer(self):
         self.child_timer.show()
+
 
 class ChildTimer(QWidget):
     trans_check = pyqtSignal()
@@ -1396,7 +1486,6 @@ class ChildTimer(QWidget):
         self.hbox_input.addLayout(self.vbox_timer)
         self.hbox_input.addLayout(self.vbox_last)
 
-
         self.hbox_btn = QHBoxLayout()
         self.hbox_btn.addWidget(self.status)
         self.hbox_btn.addWidget(self.clear_btn)
@@ -1447,6 +1536,246 @@ class ChildTimer(QWidget):
     def exit(self):
         self.save_data()
         self.close()
+
+
+class CRC(object):
+    """Generic CRC model implemented with lookup tables.
+    The model parameter can are the constructor parameters.
+    Args:
+        width (int): Number of bits of the polynomial
+        polynomial (int): CRC polynomial
+        initial_value (int): Initial value of the checksum
+        final_xor_value (int): Value that will be XOR-ed with final checksum
+        input_reflected (bool): True, if each input byte should be reflected
+        result_reflected (bool): True, if the result should be reflected before
+            the final XOR is applied
+    Usage:
+        .. code:: python
+            from crc import CRC
+            # Definition  of CRC-32 Ethernet. The crc module defines many common
+            # models already.
+            crc = CRC(32, 0x04c11db7, 0xffffffff, 0xffffffff, True, True)
+            # You can call the model to calculate the CRC checksum of byte
+            # string
+            assert crc(b"Hello world!") == 0x1b851995
+    """
+    def __init__(self, width, polynomial, initial_value, final_xor_value,
+                 input_reflected, result_reflected):
+        self.width = width
+        self.polynomial = polynomial
+        self.initial_value = initial_value
+        self.final_xor_value = final_xor_value
+        self.input_reflected = input_reflected
+        self.result_reflected = result_reflected
+
+        # Initialize casting mask to keep the correct width for dynamic Python
+        # integers
+        self.cast_mask = int('1' * self.width, base=2)
+
+        # Mask that can be applied to get the Most Significant Bit (MSB) if the
+        # number with given width
+        self.msb_mask = 0x01 << (self.width - 1)
+
+        # The lookup tables get initialized lazzily. This ensures that only
+        # tables are calculated that are actually needed.
+        self.table = None
+        self.reflected_table = None
+
+    def __call__(self, value):
+        """Compute the CRC checksum with respect to the model parameters by using
+        a looup table algorithm.
+        Args:
+            value (bytes): Input bytes that should be checked
+        Returns:
+            int - CRC checksum
+        """
+        # Use the reflection optimization if applicable
+        if self.input_reflected and self.result_reflected:
+            return self.fast_reflected(value)
+
+        # Lazy initialization of the lookup table
+        if self.table is None:
+            self.table = self.calculate_crc_table()
+
+        crc = self.initial_value
+
+        for cur_byte in value:
+            if self.input_reflected:
+                cur_byte = reflect(cur_byte, 8)
+
+            # Update the MSB of the CRC value with the next input byte
+            crc = (crc ^ (cur_byte << (self.width - 8))) & self.cast_mask
+
+            # This MSB byte value is the index into the lookup table
+            index = (crc >> (self.width - 8)) & 0xff
+
+            # Shift out the index
+            crc = (crc << 8) & self.cast_mask
+
+            # XOR-ing crc from the lookup table using the calculated index
+            crc = crc ^ self.table[index]
+
+        if self.result_reflected:
+            crc = reflect(crc, self.width)
+
+        # Final XBOR
+        return crc ^ self.final_xor_value
+
+    def fast_reflected(self, value):
+        """If the input data and the result checksum are both reflected in the
+        current model, an optimized algorithm can be used that reflects the
+        looup table rather then the input data. This saves the reflection
+        operation of the input data.
+        """
+        if not self.input_reflected or not self.result_reflected:
+            raise ValueError("Input and result must be reflected")
+
+        # Lazy initialization of the lookup table
+        if self.reflected_table is None:
+            self.reflected_table = self.calculate_crc_table_reflected()
+
+        crc = self.initial_value
+
+        for cur_byte in value:
+            # The LSB of the XOR-red remainder and the next byte is the index
+            # into the lookup table
+            index = (crc & 0xff) ^ cur_byte
+
+            # Shift out the index
+            crc = (crc >> 8) & self.cast_mask
+
+            # XOR-ing remainder from the loopup table
+            crc = crc ^ self.reflected_table[index]
+
+        # Final XBOR
+        return crc ^ self.final_xor_value
+
+
+    def calculate_crc_table(self):
+        table = make_table(self.width)
+
+        for divident in range(256):
+            cur_byte = (divident << (self.width - 8)) & self.cast_mask
+
+            for bit in range(8):
+                if (cur_byte & self.msb_mask) != 0:
+                    cur_byte <<= 1
+                    cur_byte ^= self.polynomial
+                else:
+                    cur_byte <<= 1
+
+            table[divident] = cur_byte & self.cast_mask
+
+        return table
+
+    def calculate_crc_table_reflected(self):
+        table = make_table(self.width)
+
+        for divident in range(256):
+            reflected_divident = reflect(divident, 8)
+            cur_byte = (reflected_divident << (self.width - 8)) & self.cast_mask
+
+            for bit in range(8):
+                if (cur_byte & self.msb_mask) != 0:
+                    cur_byte <<= 1
+                    cur_byte ^= self.polynomial
+                else:
+                    cur_byte <<= 1
+
+            cur_byte = reflect(cur_byte, self.width)
+
+            table[divident] = (cur_byte & self.cast_mask)
+
+        return table
+
+
+def reflect(num, width):
+    """Reverts bit order of the given number
+    Args:
+        num (int): Number that should be reflected
+        width (int): Size of the number in bits
+    """
+    reflected = 0
+
+    for i in range(width):
+        if (num >> i) & 1 != 0:
+            reflected |= 1 << (width - 1 - i)
+
+    return reflected
+
+
+def make_table(width):
+    """Create static sized CRC lookup table and initialize it with ``0``.
+    For 8, 16, 32, and 64 bit width :class:`array.array` instances are used. For
+    all other widths it falls back to a generic Python :class:`list`.
+    Args:
+        width (int): Size of elements in bits
+    """
+    initializer = (0 for _ in range(256))
+
+    if width == 8:
+        return array.array('B', initializer)
+    elif width == 16:
+        return array.array('H', initializer)
+    elif width == 32:
+        return array.array('L', initializer)
+    elif width == 64:
+        return array.array('Q', initializer)
+    else:
+        # Fallback to a generic list
+        return list(initializer)
+
+
+# Known CRC algorihtms
+crc8                = CRC(8, 0x07, 0x00, 0x00, False, False)
+crc8_sae_j1850      = CRC(8, 0x1d, 0xff, 0xff, False, False)
+crc8_sae_j1850_zero = CRC(8, 0x1d, 0x00, 0x00, False, False)
+crc8_8h2f           = CRC(8, 0x2f, 0xff, 0xff, False, False)
+crc8_cdma2000       = CRC(8, 0x9b, 0xff, 0x00, False, False)
+crc8_darc           = CRC(8, 0x39, 0x00, 0x00, True, True)
+crc8_dvb_s2         = CRC(8, 0xd5, 0x00, 0x00, False, False)
+crc8_ebu            = CRC(8, 0x1d, 0xff, 0x00, True, True)
+crc8_icode          = CRC(8, 0x1d, 0xfd, 0x00, False, False)
+crc8_itu            = CRC(8, 0x07, 0x00, 0x55, False, False)
+crc8_maxim          = CRC(8, 0x31, 0x00, 0x00, True, True)
+crc8_rohc           = CRC(8, 0x07, 0xff, 0x00, True, True)
+crc8_wcdma          = CRC(8, 0x9b, 0x00, 0x00, True, True)
+
+crc16_ccit_zero     = CRC(16, 0x1021, 0x0000, 0x0000, False, False)
+crc16_arc           = CRC(16, 0x8005, 0x0000, 0x0000, True, True)
+crc16_aug_ccitt     = CRC(16, 0x1021, 0x1d0f, 0x0000, False, False)
+crc16_buypass       = CRC(16, 0x8005, 0x0000, 0x0000, False, False)
+crc16_ccitt_false   = CRC(16, 0x1021, 0xffff, 0x0000, False, False)
+crc16_cdma2000      = CRC(16, 0xc867, 0xffff, 0x0000, False, False)
+crc16_dds_110       = CRC(16, 0x8005, 0x800d, 0x0000, False, False)
+crc16_dect_r        = CRC(16, 0x0589, 0x0000, 0x0001, False, False)
+crc16_dect_x        = CRC(16, 0x0589, 0x0000, 0x0000, False, False)
+crc16_dnp           = CRC(16, 0x3d65, 0x0000, 0xffff, True, True)
+crc16_en_13757      = CRC(16, 0x3d65, 0x0000, 0xffff, False, False)
+crc16_genibus       = CRC(16, 0x1021, 0xffff, 0xffff, False, False)
+crc16_maxim         = CRC(16, 0x8005, 0x0000, 0xffff, True, True)
+crc16_mcrf4xx       = CRC(16, 0x1021, 0xffff, 0x0000, True, True)
+crc16_riello        = CRC(16, 0x1021, 0xb2aa, 0x0000, True, True)
+crc16_t10_dif       = CRC(16, 0x8bb7, 0x0000, 0x0000, False, False)
+crc16_teledisk      = CRC(16, 0xa097, 0x0000, 0x0000, False, False)
+crc16_tms37157      = CRC(16, 0x1021, 0x89ec, 0x0000, True, True)
+crc16_usb           = CRC(16, 0x8005, 0xffff, 0xffff, True, True)
+crc16_a             = CRC(16, 0x1021, 0xc6c6, 0x0000, True, True)
+crc16_kermit        = CRC(16, 0x1021, 0x0000, 0x0000, True, True)
+crc16_modbus        = CRC(16, 0x8005, 0xffff, 0x0000, True, True)
+crc16_x25           = CRC(16, 0x1021, 0xffff, 0xffff, True, True)
+crc16_xmodem        = CRC(16, 0x1021, 0x0000, 0x0000, False, False)
+
+crc32               = CRC(32, 0x04c11db7, 0xffffffff, 0xffffffff, True, True)
+crc32_bzip2         = CRC(32, 0x04c11db7, 0xffffffff, 0xffffffff, False, False)
+crc32_c             = CRC(32, 0x1edc6f41, 0xffffffff, 0xffffffff, True, True)
+crc32_d             = CRC(32, 0xa833982b, 0xffffffff, 0xffffffff, True, True)
+crc32_mpeg2         = CRC(32, 0x04c11db7, 0xffffffff, 0x00000000, False, False)
+crc32_posix         = CRC(32, 0x04c11db7, 0x00000000, 0xffffffff, False, False)
+crc32_q             = CRC(32, 0x814141ab, 0x00000000, 0x00000000, False, False)
+crc32_jamcrc        = CRC(32, 0x04c11db7, 0xffffffff, 0x00000000, True, True)
+crc32_xfer          = CRC(32, 0x000000af, 0x00000000, 0x00000000, False, False)
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
